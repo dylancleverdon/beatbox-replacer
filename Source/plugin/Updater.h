@@ -32,8 +32,8 @@
 //
 // Installing in place (after downloading the zip to a temp file and verifying its SHA-256 when
 // the manifest has one):
-//   * Windows. bundle = currentExecutableFile (the DLL ...\BeatboxReplacer.vst3\Contents\
-//     x86_64-win\BeatboxReplacer.vst3) -> up three levels. Extract the zip to %TEMP%. For every
+//   * Windows. bundle = currentExecutableFile (the DLL
+//     ...\BeatboxReplacer.vst3\Contents\x86_64-win\BeatboxReplacer.vst3) -> up three levels. Extract the zip to %TEMP%. For every
 //     file of the new bundle: COPY it to "<dest>.new" inside the installed bundle (a new file
 //     created there inherits the folder's ACL; never move files in from %TEMP%), then
 //       - if dest exists: try to delete it; if that fails (the loaded DLL is locked), rename it to
@@ -127,6 +127,7 @@ private:
     juce::String statusText;
     std::atomic<float> progress { 0.0f };
     std::optional<ReleaseInfo> available;
+    juce::String availableSha256;           // of available->bundleZipUrl, from latest.json ("" if unknown)
     bool needsFullInstaller = false;
     bool hasChecked = false;
 

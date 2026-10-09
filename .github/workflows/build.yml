@@ -1,0 +1,454 @@
+# Build, test, package and (on main) release Beatbox Replacer.
+#
+# Every push to main publishes release v1.0.<run number> with the assets the in-plugin updater
+# expects (see Source/plugin/Updater.h). Keep this file's name: github.run_number is counted per
+# workflow, and a reset would make new releases look older than existing ones.
+
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a GitHub release from this run"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Runs on main are queued, never cancelled, so releases are published in order.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  VERSION: 1.0.${{ github.run_number }}
+  BUILD_NUMBER: ${{ github.run_number }}
+  DEBIAN_FRONTEND: noninteractive
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+  HOMEBREW_NO_ENV_HINTS: "1"
+  GH_PROMPT_DISABLED: "1"
+  GIT_TERMINAL_PROMPT: "0"
+  CTEST_OUTPUT_ON_FAILURE: "1"
+
+jobs:
+  core-tests:
+    name: Core tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DBBR_BUILD_PLUGIN=OFF -DBBR_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release -DBBR_BUILD_NUMBER="$BUILD_NUMBER"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  linux-plugin:
+    name: Linux plugin (compile check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install JUCE dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config \
+            libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev \
+            libxcomposite-dev libxrender-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+
+      # JUCE is fetched once per version and cached; CMake uses the cached copy.
+      - name: JUCE version
+        id: juce
+        shell: bash
+        run: |
+          tag=$(sed -n 's/^[[:space:]]*GIT_TAG[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' CMakeLists.txt | head -n 1)
+          if [ -z "$tag" ]; then echo "::error::No GIT_TAG in CMakeLists.txt"; exit 1; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "dir=${GITHUB_WORKSPACE//\\//}/.ci-cache/JUCE-$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache JUCE
+        id: juce-cache
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/JUCE-${{ steps.juce.outputs.tag }}
+          key: juce-${{ steps.juce.outputs.tag }}-${{ runner.os }}
+
+      - name: Download JUCE
+        if: steps.juce-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          dest=".ci-cache/JUCE-${{ steps.juce.outputs.tag }}"
+          git clone --depth 1 --branch "${{ steps.juce.outputs.tag }}" https://github.com/juce-framework/JUCE.git "$dest"
+          rm -rf "$dest/.git"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBBR_BUILD_NUMBER="$BUILD_NUMBER"
+          -DBBR_BUILD_TESTS=ON
+          -DFETCHCONTENT_SOURCE_DIR_JUCE="${{ steps.juce.outputs.dir }}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: |
+          if command -v xvfb-run >/dev/null; then
+            xvfb-run -a ctest --test-dir build --output-on-failure
+          else
+            ctest --test-dir build --output-on-failure
+          fi
+
+  windows:
+    name: Windows (VST3 + installer)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JUCE version
+        id: juce
+        shell: bash
+        run: |
+          tag=$(sed -n 's/^[[:space:]]*GIT_TAG[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' CMakeLists.txt | head -n 1)
+          if [ -z "$tag" ]; then echo "::error::No GIT_TAG in CMakeLists.txt"; exit 1; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "dir=${GITHUB_WORKSPACE//\\//}/.ci-cache/JUCE-$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache JUCE
+        id: juce-cache
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/JUCE-${{ steps.juce.outputs.tag }}
+          key: juce-${{ steps.juce.outputs.tag }}-${{ runner.os }}
+
+      - name: Download JUCE
+        if: steps.juce-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          dest=".ci-cache/JUCE-${{ steps.juce.outputs.tag }}"
+          git clone --depth 1 --branch "${{ steps.juce.outputs.tag }}" https://github.com/juce-framework/JUCE.git "$dest"
+          rm -rf "$dest/.git"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -A x64
+          "-DBBR_BUILD_NUMBER=$env:BUILD_NUMBER"
+          -DBBR_BUILD_TESTS=ON
+          "-DFETCHCONTENT_SOURCE_DIR_JUCE=${{ steps.juce.outputs.dir }}"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Locate VST3 bundle
+        id: bundle
+        run: |
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'build\BeatboxReplacer_artefacts\Release\VST3\BeatboxReplacer.vst3'
+          $dll = Join-Path $bundle 'Contents\x86_64-win\BeatboxReplacer.vst3'
+          if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) {
+            Write-Host "::error::VST3 plug-in DLL not found at $dll"
+            if (Test-Path build\BeatboxReplacer_artefacts) {
+              Get-ChildItem -Recurse build\BeatboxReplacer_artefacts | ForEach-Object { $_.FullName }
+            }
+            exit 1
+          }
+          Get-ChildItem -Recurse -LiteralPath $bundle | ForEach-Object { $_.FullName }
+          Write-Host "File version: $((Get-Item -LiteralPath $dll).VersionInfo.FileVersion) (expected $env:VERSION)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "bundle=$bundle"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "dll=$dll"
+
+      - name: Check the plug-in does not need the VC++ runtime
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                       -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found' }
+          $deps = & $dumpbin /nologo /dependents "${{ steps.bundle.outputs.dll }}"
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+          $deps | ForEach-Object { Write-Host $_ }
+          $bad = $deps | Select-String -Pattern '(?i)\b(vcruntime|msvcp|concrt)\d+[a-z0-9_]*\.dll'
+          if ($bad) {
+            Write-Host "::error::The plug-in links the VC++ runtime dynamically: $($bad.Line.Trim() -join ', ')"
+            exit 1
+          }
+          if ($deps | Select-String -Pattern '(?i)\b(ucrtbase|api-ms-win-crt-)') {
+            Write-Host "::warning::The plug-in depends on the dynamic UCRT"
+          }
+
+      - name: Zip the bundle
+        shell: python
+        env:
+          BUNDLE: ${{ steps.bundle.outputs.bundle }}
+        run: |
+          import os, pathlib, zipfile
+          bundle = pathlib.Path(os.environ["BUNDLE"])
+          out = pathlib.Path("dist")
+          out.mkdir(exist_ok=True)
+          # "BeatboxReplacer.vst3" folder at the zip root, "/" separators, directory entries included.
+          with zipfile.ZipFile(out / "BeatboxReplacer-Windows.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+              for path in [bundle, *sorted(bundle.rglob("*"))]:
+                  name = (pathlib.PurePosixPath(bundle.name) / path.relative_to(bundle).as_posix()).as_posix()
+                  z.write(path, name)
+
+      - name: Check the zip
+        run: python scripts/make_manifest.py check-zip windows dist\BeatboxReplacer-Windows.zip
+
+      - name: Build the installer
+        run: |
+          $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+          $search = @("${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe", "$env:ProgramFiles\Inno Setup *\ISCC.exe")
+          if (-not $iscc) {
+            $iscc = Get-ChildItem -Path $search -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not found; installing it with Chocolatey'
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem -Path $search -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc) { throw 'Inno Setup (ISCC.exe) not found' }
+          Write-Host "Using $iscc"
+          & $iscc "/DAppVersion=$env:VERSION" "/DBundleDir=${{ steps.bundle.outputs.bundle }}" "/O$env:GITHUB_WORKSPACE\dist" installer\windows\BeatboxReplacer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path dist\BeatboxReplacer-Setup.exe)) { throw 'dist\BeatboxReplacer-Setup.exe was not created' }
+          Get-FileHash dist\* -Algorithm SHA256 | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/BeatboxReplacer-Windows.zip
+            dist/BeatboxReplacer-Setup.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: pluginval (informational)
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'pluginval'
+          Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile "$dir.zip"
+          Expand-Archive -Path "$dir.zip" -DestinationPath $dir -Force
+          $exe = Get-ChildItem -Path $dir -Recurse -Filter pluginval.exe | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) { throw 'pluginval.exe not found in the download' }
+          & $exe --strictness-level 5 --verbose --validate "${{ steps.bundle.outputs.bundle }}"
+          if ($LASTEXITCODE -ne 0) { throw "pluginval reported problems (exit code $LASTEXITCODE)" }
+
+  macos:
+    name: macOS (VST3 + AU, universal)
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JUCE version
+        id: juce
+        shell: bash
+        run: |
+          tag=$(sed -n 's/^[[:space:]]*GIT_TAG[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' CMakeLists.txt | head -n 1)
+          if [ -z "$tag" ]; then echo "::error::No GIT_TAG in CMakeLists.txt"; exit 1; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "dir=${GITHUB_WORKSPACE//\\//}/.ci-cache/JUCE-$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache JUCE
+        id: juce-cache
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/JUCE-${{ steps.juce.outputs.tag }}
+          key: juce-${{ steps.juce.outputs.tag }}-${{ runner.os }}
+
+      - name: Download JUCE
+        if: steps.juce-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          dest=".ci-cache/JUCE-${{ steps.juce.outputs.tag }}"
+          git clone --depth 1 --branch "${{ steps.juce.outputs.tag }}" https://github.com/juce-framework/JUCE.git "$dest"
+          rm -rf "$dest/.git"
+
+      - name: Install Ninja
+        run: command -v ninja >/dev/null || brew install ninja
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DBBR_BUILD_NUMBER="$BUILD_NUMBER"
+          -DBBR_BUILD_TESTS=ON
+          -DFETCHCONTENT_SOURCE_DIR_JUCE="${{ steps.juce.outputs.dir }}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # Unsigned plug-ins don't load on Apple silicon; JUCE's own post-build signature is also
+      # invalidated by the moduleinfo.json step, so sign the finished bundles here.
+      - name: Check and sign bundles
+        id: bundles
+        run: |
+          set -euo pipefail
+          art="$PWD/build/BeatboxReplacer_artefacts/Release"
+          vst3="$art/VST3/BeatboxReplacer.vst3"
+          au="$art/AU/BeatboxReplacer.component"
+          for b in "$vst3" "$au"; do
+            if [ ! -d "$b" ]; then
+              echo "::error::Bundle not found: $b"
+              find build/BeatboxReplacer_artefacts -maxdepth 4 -print || true
+              exit 1
+            fi
+            plist="$b/Contents/Info.plist"
+            exe="$b/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+            lipo -info "$exe"
+            lipo "$exe" -verify_arch arm64 x86_64
+            v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+            if [ "$v" != "$VERSION" ]; then
+              echo "::error::$b has version $v, expected $VERSION"
+              exit 1
+            fi
+            xattr -cr "$b"
+            codesign --force --deep --sign - --timestamp=none "$b"
+            codesign --verify --deep --strict --verbose=2 "$b"
+            codesign -dv "$b" 2>&1 | grep -E '^(Identifier|Format|Signature)' || true
+          done
+          echo "vst3=$vst3" >> "$GITHUB_OUTPUT"
+          echo "au=$au" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Zip bundles
+        run: |
+          set -euo pipefail
+          rm -rf stage && mkdir -p stage dist
+          ditto "${{ steps.bundles.outputs.vst3 }}" stage/BeatboxReplacer.vst3
+          ditto "${{ steps.bundles.outputs.au }}" stage/BeatboxReplacer.component
+          # Zip the contents of stage: both bundles at the zip root, unix modes kept.
+          ditto -c -k --sequesterRsrc stage dist/BeatboxReplacer-macOS.zip
+          python3 scripts/make_manifest.py check-zip macos dist/BeatboxReplacer-macOS.zip
+          # Extract the way the updater does and check the signatures survived.
+          check="$RUNNER_TEMP/zip-check"
+          rm -rf "$check" && mkdir -p "$check"
+          ditto -x -k dist/BeatboxReplacer-macOS.zip "$check"
+          codesign --verify --deep --strict "$check/BeatboxReplacer.vst3"
+          codesign --verify --deep --strict "$check/BeatboxReplacer.component"
+
+      - name: Build the installer
+        run: |
+          bash installer/mac/build_pkg.sh stage/BeatboxReplacer.vst3 stage/BeatboxReplacer.component "$VERSION" dist/BeatboxReplacer-macOS.pkg
+          shasum -a 256 dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/BeatboxReplacer-macOS.zip
+            dist/BeatboxReplacer-macOS.pkg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: auval (informational)
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          rm -rf ~/Library/Audio/Plug-Ins/Components/BeatboxReplacer.component
+          ditto stage/BeatboxReplacer.component ~/Library/Audio/Plug-Ins/Components/BeatboxReplacer.component
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -a | grep -i dycl || true
+          auval -v aumu Bbxr Dycl
+
+      - name: pluginval (informational)
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/pluginval"
+          curl -fsSL -o "$dir.zip" https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          rm -rf "$dir" && ditto -x -k "$dir.zip" "$dir"
+          exe="$(find "$dir" -path '*/Contents/MacOS/pluginval' -type f | head -n 1)"
+          if [ -z "$exe" ]; then echo "pluginval not found in the download"; exit 1; fi
+          "$exe" --strictness-level 5 --verbose --validate "$PWD/stage/BeatboxReplacer.vst3"
+
+  release:
+    name: Publish release
+    needs: [core-tests, linux-plugin, windows, macos]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+          path: dist
+
+      - name: Write latest.json
+        run: |
+          set -euo pipefail
+          git log -1 --format=%B "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
+          python3 scripts/make_manifest.py write --version "$VERSION" --assets dist \
+            --notes-file "$RUNNER_TEMP/notes.md" --out dist/latest.json
+          sha256sum dist/*
+
+      - name: Create or update the release
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          assets=(dist/BeatboxReplacer-Setup.exe dist/BeatboxReplacer-Windows.zip
+                  dist/BeatboxReplacer-macOS.pkg dist/BeatboxReplacer-macOS.zip dist/latest.json)
+
+          # Never let an older build (re-run, manual publish from an old branch) become "latest".
+          latest=--latest
+          current="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+          if [ -n "$current" ] && [ "$current" != "$tag" ]; then
+            newest="$(printf '%s\n%s\n' "${current#v}" "$VERSION" | sort -V | tail -n 1)"
+            if [ "$newest" != "$VERSION" ]; then
+              echo "::warning::$current is newer than $tag; not marking $tag as latest"
+              latest=--latest=false
+            fi
+          fi
+
+          existing="$(git ls-remote origin "refs/tags/$tag" | cut -f1)"
+          if [ -n "$existing" ] && [ "$existing" != "$GITHUB_SHA" ]; then
+            echo "::error::Tag $tag already exists for commit $existing, not $GITHUB_SHA"
+            exit 1
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag exists; replacing its assets"
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" --target "$GITHUB_SHA" "$latest" \
+              --title "Beatbox Replacer $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          echo "https://github.com/$GH_REPO/releases/tag/$tag"

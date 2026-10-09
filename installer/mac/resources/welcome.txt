@@ -1,0 +1,10 @@
+Beatbox Replacer turns beatboxing into MIDI drum notes.
+
+This installs, for all users of this Mac:
+
+  - VST3:        /Library/Audio/Plug-Ins/VST3/BeatboxReplacer.vst3
+  - Audio Unit:  /Library/Audio/Plug-Ins/Components/BeatboxReplacer.component
+
+In Ableton Live, use the VST3 version: Live can't receive MIDI from Audio Unit plug-ins.
+
+If Live is open, quit it before installing.

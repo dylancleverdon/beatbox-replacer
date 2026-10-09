@@ -7,3 +7,4 @@
 *.user
 .DS_Store
 /installer/output/
+.ci-cache/

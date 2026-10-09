@@ -128,3 +128,20 @@ if(BBR_BUILD_PLUGIN)
             juce::juce_recommended_lto_flags
             juce::juce_recommended_warning_flags)
 endif()
+
+# End-to-end test of the real processor, linked against the plugin's shared code library.
+if(BBR_BUILD_PLUGIN AND BBR_BUILD_TESTS)
+    add_executable(bbr_plugin_smoke tests/PluginSmokeTest.cpp tests/TestSignals.cpp)
+    # Same headers and defines as the plugin (JUCE modules are already compiled into it).
+    target_include_directories(bbr_plugin_smoke PRIVATE
+        Source
+        tests
+        "$<TARGET_PROPERTY:BeatboxReplacer,INCLUDE_DIRECTORIES>")
+    target_compile_definitions(bbr_plugin_smoke PRIVATE
+        "$<TARGET_PROPERTY:BeatboxReplacer,COMPILE_DEFINITIONS>")
+    target_link_libraries(bbr_plugin_smoke PRIVATE
+        BeatboxReplacer
+        bbr_core
+        juce::juce_recommended_config_flags)
+    add_test(NAME bbr_plugin_smoke COMMAND bbr_plugin_smoke)
+endif()

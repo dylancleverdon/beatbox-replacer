@@ -153,10 +153,22 @@ void FeatureExtractor::extract (const float* x, int numSamples, const FeatureSet
         if (hz > kHighRatioHz)
             high += power;
 
+    }
+
+    // Energies are floored 60 dB below the window's total energy instead of at an absolute
+    // level, so every feature stays exactly loudness-independent (a quiet kick must look like a
+    // loud one) and near-empty bands can't dominate the spectral shape.
+    const double floorEnergy = total * 1.0e-6 + 1.0e-30;
+
+    for (int k = 1; k <= numBins; ++k)
+    {
+        const double hz = (double) k * binHz;
+
         if (hz >= kLowestBandHz && hz <= topHz)
         {
-            flatLogSum += std::log (power + 1e-10);
-            flatSum += power + 1e-10;
+            const double power = (double) mags[k] * (double) mags[k] + floorEnergy;
+            flatLogSum += std::log (power);
+            flatSum += power;
             ++flatCount;
         }
     }
@@ -167,9 +179,9 @@ void FeatureExtractor::extract (const float* x, int numSamples, const FeatureSet
     if (flatCount > 0)
         featuresOut[kFeatFlatness] = (float) (flatLogSum / flatCount - std::log (flatSum / flatCount));
 
-    const double totalDb = powerDb (total);
-    featuresOut[kFeatLowRatio] = (float) (powerDb (low) - totalDb);
-    featuresOut[kFeatHighRatio] = (float) (powerDb (high) - totalDb);
+    const double totalDb = powerDb (total + floorEnergy);
+    featuresOut[kFeatLowRatio] = (float) (powerDb (low + floorEnergy) - totalDb);
+    featuresOut[kFeatHighRatio] = (float) (powerDb (high + floorEnergy) - totalDb);
 
     // ---- mel bands: edges[b] .. edges[b + 1] - 1 are band b's bins ----
     int edges[kNumBands + 1];
@@ -206,7 +218,7 @@ void FeatureExtractor::extract (const float* x, int numSamples, const FeatureSet
         for (int k = edges[b]; k < edges[b + 1]; ++k)
             energy += (double) mags[k] * (double) mags[k];
 
-        bandDb[b] = powerDb (energy);
+        bandDb[b] = powerDb (energy + floorEnergy);
         meanDb += bandDb[b];
     }
 

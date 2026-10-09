@@ -1,0 +1,7 @@
+Beatbox Replacer is installed.
+
+Open Ableton, rescan plug-ins (Settings > Plug-Ins > Rescan), and load BeatboxReplacer (VST3) on a MIDI track.
+
+Then, in the device, enable Sidechain and set Audio From to your beatbox track. To record the notes, add a third MIDI track with a Drum Rack: MIDI From = the BeatboxReplacer track (lower chooser "BeatboxReplacer"), Monitor = In, and arm it.
+
+Updates install from inside the plug-in; restart Live afterwards.

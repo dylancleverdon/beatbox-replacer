@@ -15,10 +15,11 @@ namespace bbr
 //
 // Method: take windowSamples(settings) samples starting at the onset, apply a Hann window,
 // zero-pad to the next power of two (minimum 256) and take magnitude spectrum. Band energies
-// are summed |X|^2 over kNumBands triangular-free (rectangular) mel-spaced bands between 60 Hz
-// and min(16 kHz, 0.45 * sampleRate); every band gets at least one FFT bin. Log is
-// 10*log10(e + 1e-10). Time-domain features (zero-crossing rate, envelope shape, peak) use the
-// un-windowed samples.
+// are summed |X|^2 over kNumBands rectangular mel-spaced bands between 60 Hz and
+// min(16 kHz, 0.45 * sampleRate); every band gets at least one FFT bin. Spectral energies are
+// floored at 1e-6 * the window's total energy (60 dB down) before taking logs, so all features
+// are independent of the hit's loudness. Time-domain features (zero-crossing rate, envelope
+// shape, peak) use the un-windowed samples.
 class FeatureExtractor
 {
 public:

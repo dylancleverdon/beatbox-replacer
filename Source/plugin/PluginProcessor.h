@@ -217,5 +217,24 @@ private:
     void timerCallback() override;
     void parameterChanged (const juce::String& parameterID, float newValue) override;
 
+    // Private helpers (message thread).
+    bbr::DetectorSettings currentDetectorSettings() const;
+    bbr::FeatureSettings currentFeatureSettings() const;
+    void rebuildModel();
+    void cancelLearnRecording();
+    void finishLearnRecording();
+    void analyseLearnAudio (std::vector<float> mono, double sampleRate);
+    bool collectFinishedTake();
+    void applyProfile (std::vector<bbr::SlotInfo> slotInfos, std::vector<bbr::TrainingHit> hits,
+                       float windowMs, bool setWindowParameter);
+    std::unique_ptr<juce::XmlElement> createProfileXml() const;
+    std::vector<uint8_t> createTakeMidi (bool fromSongStart) const;
+    juce::String readAudioFile (const juce::File& file, std::vector<float>& monoOut, double& sampleRateOut);
+
+   #if BBR_AUX_ONLY_SIDECHAIN
+    // Reports the only input bus (the sidechain) to VST3 hosts as kAux instead of kMain.
+    juce::VST3ClientExtensions* getVST3ClientExtensions() override;
+   #endif
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BeatboxProcessor)
 };
