@@ -33,10 +33,19 @@ between tracks.
 3. Stop playback. Beatbox Replacer finds every hit and puts similar hits into **groups**.
 4. For each group, press ▶ to hear a typical hit, then pick which sound it is from the dropdown.
    Pick **Ignore (no note)** for breaths, clicks or anything that shouldn't make a note.
-5. If one hit landed in the wrong group, click its marker on the waveform to hear it, then
-   right-click it (or click it again) to move just that hit.
-6. Too many or too few groups? Use **Groups − / +**.
-7. Press **Add to training**. Use **Replace training** instead to start over.
+5. If one hit landed in the wrong group, click its marker on the waveform to hear it (it plays up
+   to the next marker), then right-click it (or click it again) to move just that hit.
+6. Fix the markers if you need to. To delete one, right-click it and choose **Delete marker**, or
+   select it and press Delete. To add a missed hit, right-click an empty spot on the waveform and
+   choose **Add marker here**. The new marker joins the group it sounds most like.
+7. Too many or too few groups? Use **Groups − / +**.
+8. Press **Play recording** to hear the whole pass (press it again to stop). To start partway,
+   right-click the waveform and choose **Play from here**.
+9. Want this pass as MIDI? Drag **Drag this as MIDI into Ableton** (bottom left) onto a MIDI track.
+   Every hit with a sound becomes a note, and ignored hits are left out. A pass recorded with
+   Learn goes back to the bar it was recorded at. A loaded file starts at bar 1. Do this before
+   step 10, because adding to training clears the recording.
+10. Press **Add to training**. Use **Replace training** instead to start over.
 
 You can repeat Learn as often as you like. Every pass adds more examples, and more examples make
 it more accurate. You can also drop an audio file of your beatboxing on the Learn tab, or use

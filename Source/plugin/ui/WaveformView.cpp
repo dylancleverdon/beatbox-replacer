@@ -14,7 +14,8 @@ namespace
     constexpr double kMinViewSeconds = 0.1;
 
     // Popup menu item ids.
-    constexpr int kMenuPlay = 1, kMenuIgnore = 2, kMenuFollow = 3, kMenuSlotBase = 100;
+    constexpr int kMenuPlay = 1, kMenuIgnore = 2, kMenuFollow = 3, kMenuDelete = 4, kMenuSlotBase = 100;
+    constexpr int kMenuAddMarker = 1, kMenuPlayFromHere = 2;
 
     juce::String secondsLabel (double t, double step)
     {
@@ -34,6 +35,7 @@ WaveformView::WaveformView (BeatboxProcessor& p)
     : processor (p)
 {
     setOpaque (false);
+    setWantsKeyboardFocus (true);
 }
 
 WaveformView::~WaveformView() = default;
@@ -74,6 +76,23 @@ void WaveformView::refresh()
         hoverHit = -1;
 
     repaint();
+}
+
+void WaveformView::tick()
+{
+    const auto position = hasSession() ? processor.getLearnAuditionPosition() : (int64_t) -1;
+
+    if (position != playhead)
+    {
+        playhead = position;
+        repaint();
+    }
+}
+
+bool WaveformView::sameAudio (const float* data, size_t size) const
+{
+    const auto& audio = processor.getLearnSession().getAudio();
+    return audio.data() == data && audio.size() == size;
 }
 
 void WaveformView::setPlaceholder (const juce::String& text, bool large)
@@ -355,6 +374,17 @@ void WaveformView::paint (juce::Graphics& g)
 
         if (selectedHit >= 0 && selectedHit < session.numHits())
             drawHit (selectedHit);
+
+        if (playhead >= 0)
+        {
+            const auto x = sampleToX ((double) playhead);
+
+            if (x >= (float) wave.getX() && x <= (float) wave.getRight())
+            {
+                g.setColour (Theme::text.withAlpha (0.9f));
+                g.fillRect (juce::Rectangle<float> (x - 0.75f, (float) lane.getY(), 1.5f, (float) (wave.getBottom() - lane.getY())));
+            }
+        }
     }
 
     if (session.numHits() == 0)
@@ -390,6 +420,7 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     if (! hasSession())
         return;
 
+    grabKeyboardFocus();
     const auto hit = hitAt (e.getPosition());
 
     if (e.mods.isPopupMenu())
@@ -399,6 +430,10 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
             selectedHit = hit;
             repaint();
             showHitMenu (hit);
+        }
+        else if (getWaveArea().expanded (0, kMarkerLane).contains (e.getPosition()))
+        {
+            showEmptyMenu (e.getPosition());
         }
 
         return;
@@ -465,6 +500,69 @@ void WaveformView::mouseMagnify (const juce::MouseEvent& e, float scaleFactor)
         zoomAround ((float) e.x, 1.0 / (double) scaleFactor);
 }
 
+bool WaveformView::keyPressed (const juce::KeyPress& key)
+{
+    if ((key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) && hasSession() && selectedHit >= 0)
+    {
+        removeHit (selectedHit);
+        return true;
+    }
+
+    return false;
+}
+
+void WaveformView::removeHit (int hit)
+{
+    if (hit < 0 || hit >= processor.getLearnSession().numHits())
+        return;
+
+    processor.removeLearnHit (hit);
+    selectedHit = -1;
+    hoverHit = -1;
+    refresh();
+}
+
+void WaveformView::showEmptyMenu (juce::Point<int> pos)
+{
+    const auto sample = (int64_t) std::llround (juce::jlimit (0.0, juce::jmax (0.0, (double) audioSize - 1.0),
+                                                               xToSample ((float) pos.x)));
+
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (&getLookAndFeel());
+    menu.addItem (kMenuAddMarker, "Add marker here");
+    menu.addItem (kMenuPlayFromHere, "Play from here");
+
+    const auto target = localAreaToGlobal (juce::Rectangle<int> (pos.x - 1, pos.y - 1, 2, 2));
+    const auto* expectedAudio = audioData;
+    const auto expectedSize = audioSize;
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withTargetScreenArea (target),
+                        [safeThis = juce::Component::SafePointer<WaveformView> (this), sample, expectedAudio, expectedSize] (int result)
+    {
+        if (safeThis == nullptr || result == 0 || ! safeThis->sameAudio (expectedAudio, expectedSize))
+            return;
+
+        auto& proc = safeThis->processor;
+
+        if (result == kMenuAddMarker)
+        {
+            const auto added = proc.addLearnHit (sample);
+
+            if (added >= 0)
+            {
+                safeThis->selectedHit = added;
+                proc.auditionLearnHit (added);
+            }
+        }
+        else if (result == kMenuPlayFromHere)
+        {
+            proc.auditionLearnRecording (sample);
+        }
+
+        safeThis->refresh();
+    });
+}
+
 juce::String WaveformView::describeHit (int hit) const
 {
     auto& session = processor.getLearnSession();
@@ -496,13 +594,14 @@ juce::String WaveformView::describeHit (int hit) const
 juce::String WaveformView::getTooltip()
 {
     if (hoverHit < 0)
-        return hasSession() ? "Click a marker to hear that hit. Ctrl/Cmd + scroll to zoom, double-click to see everything."
+        return hasSession() ? "Click a marker to hear it up to the next marker. Right-click an empty spot to add a marker "
+                              "or play from there. Ctrl/Cmd + scroll to zoom, double-click to see everything."
                             : juce::String();
 
     if (hoverHit == selectedHit)
-        return describeHit (hoverHit) + "\nClick again (or right-click) to choose its sound.";
+        return describeHit (hoverHit) + "\nClick again (or right-click) to choose its sound. Delete removes the marker.";
 
-    return describeHit (hoverHit) + "\nClick to hear it, right-click to choose its sound.";
+    return describeHit (hoverHit) + "\nClick to hear it, right-click to choose its sound or delete it.";
 }
 
 void WaveformView::showHitMenu (int hit)
@@ -534,6 +633,8 @@ void WaveformView::showHitMenu (int hit)
                   groupSlot == bbr::kUnassigned ? juce::String ("Follow group (no sound chosen yet)")
                                                 : "Follow group (" + processor.getSlotName (groupSlot) + ")",
                   true, ! overridden);
+    menu.addSeparator();
+    menu.addItem (kMenuDelete, "Delete marker");
 
     const auto x = juce::roundToInt (sampleToX ((double) session.getHit (hit).onsetSample));
     const auto target = localAreaToGlobal (juce::Rectangle<int> (x - 6, getMarkerLane().getY(), 12, kMarkerLane));
@@ -547,11 +648,15 @@ void WaveformView::showHitMenu (int hit)
             return;
 
         auto& proc = safeThis->processor;
-        auto& s = proc.getLearnSession();
-
         // The session may have been replaced while the menu was open.
-        if (s.getAudio().data() != expectedAudio || s.getAudio().size() != expectedSize || hit >= s.numHits())
+        if (! safeThis->sameAudio (expectedAudio, expectedSize) || hit >= proc.getLearnSession().numHits())
             return;
+
+        if (result == kMenuDelete)
+        {
+            safeThis->removeHit (hit);
+            return;
+        }
 
         if (result == kMenuPlay)
             proc.auditionLearnHit (hit);

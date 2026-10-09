@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -216,6 +217,117 @@ void LearnSession::setHitOverride (int i, int slotId)
 
     hitOverrides.resize (hits.size(), kUnassigned);
     hitOverrides[(size_t) i] = isValidTarget (slotId) ? slotId : kUnassigned;
+}
+
+int LearnSession::addHit (int64_t onsetSample)
+{
+    if (audio.empty())
+        return -1;
+
+    const auto total = (int64_t) audio.size();
+    onsetSample = std::clamp<int64_t> (onsetSample, 0, total - 1);
+
+    const auto pos = std::lower_bound (hits.begin(), hits.end(), onsetSample,
+                                       [] (const DetectedHit& h, int64_t s) { return h.onsetSample < s; });
+
+    if (pos != hits.end() && pos->onsetSample == onsetSample)
+        return -1;
+
+    const auto index = (size_t) std::distance (hits.begin(), pos);
+    const DetectedHit hit = analyzeHitAt (audio.data(), total, sampleRate, onsetSample, featureSettings);
+
+    clusters.labels.resize (hits.size(), 0);
+    hitOverrides.resize (hits.size(), kUnassigned);
+
+    int group = 0;
+
+    if (clusters.k <= 0 || hits.empty())
+    {
+        clusters = ClusterResult();
+        clusters.k = 1;
+        clusters.labels.assign (hits.size(), 0);
+        groupSlots.assign (1, kUnassigned);
+    }
+    else
+    {
+        // Nearest group centre, in the standardised space the clustering used.
+        std::vector<DetectedHit> withNew (hits);
+        withNew.push_back (hit);
+        const Standardiser z (withNew);
+        std::vector<std::array<double, kNumFeatures>> centres ((size_t) clusters.k);
+        std::vector<int> counts ((size_t) clusters.k, 0);
+
+        for (size_t i = 0; i < hits.size(); ++i)
+        {
+            const int g = clusters.labels[i];
+
+            if (g < 0 || g >= clusters.k)
+                continue;
+
+            for (size_t d = 0; d < (size_t) kNumFeatures; ++d)
+                centres[(size_t) g][d] += z (hits[i].features, d);
+
+            ++counts[(size_t) g];
+        }
+
+        double bestDist = std::numeric_limits<double>::infinity();
+
+        for (int g = 0; g < clusters.k; ++g)
+        {
+            if (counts[(size_t) g] == 0)
+                continue;
+
+            double d2 = 0.0;
+
+            for (size_t d = 0; d < (size_t) kNumFeatures; ++d)
+            {
+                const double diff = z (hit.features, d) - centres[(size_t) g][d] / (double) counts[(size_t) g];
+                d2 += diff * diff;
+            }
+
+            if (d2 < bestDist)
+            {
+                bestDist = d2;
+                group = g;
+            }
+        }
+    }
+
+    hits.insert (hits.begin() + (std::ptrdiff_t) index, hit);
+    clusters.labels.insert (clusters.labels.begin() + (std::ptrdiff_t) index, group);
+    hitOverrides.insert (hitOverrides.begin() + (std::ptrdiff_t) index, kUnassigned);
+    return (int) index;
+}
+
+void LearnSession::removeHit (int i)
+{
+    if (i < 0 || i >= numHits())
+        return;
+
+    const auto idx = (std::ptrdiff_t) i;
+    hits.erase (hits.begin() + idx);
+
+    if ((size_t) i < hitOverrides.size())
+        hitOverrides.erase (hitOverrides.begin() + idx);
+
+    if ((size_t) i >= clusters.labels.size())
+        return;
+
+    const int g = clusters.labels[(size_t) i];
+    clusters.labels.erase (clusters.labels.begin() + idx);
+
+    if (g < 0 || g >= clusters.k || std::find (clusters.labels.begin(), clusters.labels.end(), g) != clusters.labels.end())
+        return;
+
+    // The group is empty now: drop it and close the gap.
+    for (auto& label : clusters.labels)
+        if (label > g)
+            --label;
+
+    if ((size_t) g < groupSlots.size())
+        groupSlots.erase (groupSlots.begin() + g);
+
+    --clusters.k;
 }
 
 void LearnSession::forgetSlot (int slotId)

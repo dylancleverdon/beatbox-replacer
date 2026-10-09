@@ -206,10 +206,25 @@ void TakeView::paint (juce::Graphics& g)
 }
 
 //==================================================================================================
-DragClipHandle::DragClipHandle (BeatboxProcessor& p)
-    : processor (p)
+DragClipHandle::DragClipHandle (BeatboxProcessor& p, Source s)
+    : processor (p), source (s)
 {
     refresh();
+}
+
+bool DragClipHandle::hasClip() const
+{
+    return source == Source::learn ? processor.hasLearnClip() : processor.hasTake();
+}
+
+int DragClipHandle::dropBar() const
+{
+    return source == Source::learn ? processor.getLearnClipDropBar() : processor.getTakeDropBar (fromSongStart);
+}
+
+juce::File DragClipHandle::writeForDrag() const
+{
+    return source == Source::learn ? processor.writeLearnClipForDrag() : processor.writeTakeForDrag (fromSongStart);
 }
 
 DragClipHandle::~DragClipHandle()
@@ -225,13 +240,14 @@ void DragClipHandle::setFromSongStart (bool shouldStartAtSongStart)
 
 void DragClipHandle::refresh()
 {
-    const bool hasTake = processor.hasTake();
-    setEnabled (hasTake);
+    const bool clip = hasClip();
+    setEnabled (clip);
 
-    if (hasTake)
+    if (clip)
         setTooltip ("Drag this onto a MIDI track in Ableton (or into the arrangement) and drop it at bar "
-                    + juce::String (processor.getTakeDropBar (fromSongStart))
-                    + ". The clip's first bar lines up with that bar.");
+                    + juce::String (dropBar()) + ". The clip's first bar lines up with that bar.");
+    else if (source == Source::learn)
+        setTooltip ("Record or load something with Learn and choose a sound for its hits first.");
     else
         setTooltip ("Record a take with Capture first.");
 
@@ -274,7 +290,9 @@ void DragClipHandle::paint (juce::Graphics& g)
 
     g.setColour (enabled ? Theme::text : Theme::textFaint);
     g.setFont (font (14.0f, enabled));
-    const auto text = feedback.isNotEmpty() ? feedback : juce::String ("Drag MIDI clip into Ableton");
+    const auto text = feedback.isNotEmpty() ? feedback
+                                            : juce::String (source == Source::learn ? "Drag this as MIDI into Ableton"
+                                                                                    : "Drag MIDI clip into Ableton");
     g.drawFittedText (text, r.reduced (4.0f, 2.0f).toNearestInt(), juce::Justification::centredLeft, 2, 0.85f);
 }
 
@@ -293,16 +311,16 @@ void DragClipHandle::mouseDrag (const juce::MouseEvent& e)
     dragArmed = false;
 
     // Written completely (and closed) before the drag starts; a new unique file every time.
-    const auto file = processor.writeTakeForDrag (fromSongStart);
+    const auto file = writeForDrag();
 
     if (! file.existsAsFile())
     {
-        showFeedback ("Couldn't write the clip file - try Save .mid...");
+        showFeedback (source == Source::learn ? "Couldn't write the clip file" : "Couldn't write the clip file - try Save .mid...");
         return;
     }
 
     dragInProgress = true;
-    feedback = "Drop it on a MIDI track at bar " + juce::String (processor.getTakeDropBar (fromSongStart));
+    feedback = "Drop it on a MIDI track at bar " + juce::String (dropBar());
     repaint();
 
     juce::StringArray files;
@@ -317,13 +335,13 @@ void DragClipHandle::mouseDrag (const juce::MouseEvent& e)
 
             safeThis->dragInProgress = false;
             safeThis->showFeedback ("Drag ended. The clip starts at bar "
-                                    + juce::String (safeThis->processor.getTakeDropBar (safeThis->fromSongStart)) + ".");
+                                    + juce::String (safeThis->dropBar()) + ".");
         });
 
     if (! started)
     {
         dragInProgress = false;
-        showFeedback ("Couldn't start the drag - use Save .mid... instead");
+        showFeedback (source == Source::learn ? "Couldn't start the drag" : "Couldn't start the drag - use Save .mid... instead");
     }
 }
 

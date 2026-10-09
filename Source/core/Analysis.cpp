@@ -112,6 +112,25 @@ void recomputeFeatures (std::vector<TrainingHit>& hits, const FeatureSettings& s
     }
 }
 
+DetectedHit analyzeHitAt (const float* mono, int64_t numSamples, double sampleRate,
+                          int64_t onsetSample, const FeatureSettings& features)
+{
+    DetectedHit result;
+    result.onsetSample = std::clamp<int64_t> (onsetSample, 0, std::max<int64_t> (0, numSamples - 1));
+
+    if (mono == nullptr || numSamples <= 0 || ! (sampleRate > 0.0))
+        return result;
+
+    std::vector<TrainingHit> one (1);
+    one[0].sampleRate = sampleRate;
+    one[0].snippet = makeSnippet (mono, numSamples, result.onsetSample, sampleRate, one[0].onsetOffset);
+    recomputeFeatures (one, features);
+
+    result.features = one[0].features;
+    result.peakDb = one[0].peakDb;
+    return result;
+}
+
 int velocityFor (float peakDb, float referenceDb, bool dynamic, int fixedVelocity) noexcept
 {
     if (! dynamic)

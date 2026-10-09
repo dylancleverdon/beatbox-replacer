@@ -591,6 +591,61 @@ TEST (learn_session)
     CHECK (! s.hasAudio() && s.numHits() == 0);
 }
 
+TEST (learn_session_add_remove_hits)
+{
+    const double sr = 48000.0;
+    const auto p = makeMixedPattern (sr, 919, 6, 6, 6);
+
+    bbr::LearnSession s;
+    CHECK (s.addHit (100) == -1); // no audio
+    s.setAudio (p.audio, sr);
+    s.analyze ({}, {}, defaultSlots(), nullptr);
+    const int before = s.numHits();
+    REQUIRE (before > 4);
+
+    // Re-adding an existing hit's onset is refused.
+    CHECK (s.addHit (s.getHit (2).onsetSample) == -1);
+
+    // Remove a hit, then add it back by hand: it lands in the same place and the same group.
+    const auto onset = s.getHit (3).onsetSample;
+    const int group = s.groupOfHit (3);
+    const auto features = s.getHit (3).features;
+    s.removeHit (3);
+    CHECK (s.numHits() == before - 1);
+
+    const int added = s.addHit (onset);
+    CHECK (added == 3);
+    CHECK (s.numHits() == before);
+    CHECK (s.groupOfHit (added) == group);
+    CHECK (! s.hasHitOverride (added));
+    for (int f = 0; f < bbr::kNumFeatures; ++f)
+        CHECK_NEAR (s.getHit (added).features[(size_t) f], features[(size_t) f], 1.0e-3);
+
+    for (int i = 1; i < s.numHits(); ++i)
+        CHECK (s.getHit (i - 1).onsetSample < s.getHit (i).onsetSample);
+
+    // Emptying a group removes it and renumbers the rest.
+    const int groupsBefore = s.numGroups();
+    const int lastGroup = groupsBefore - 1;
+    const int slotOfLast = s.getGroupSlot (lastGroup);
+    for (int i = s.numHits() - 1; i >= 0; --i)
+        if (s.groupOfHit (i) == 0)
+            s.removeHit (i);
+    CHECK (s.numGroups() == groupsBefore - 1);
+    CHECK (s.getGroupSlot (lastGroup - 1) == slotOfLast);
+    for (int i = 0; i < s.numHits(); ++i)
+        CHECK (s.groupOfHit (i) >= 0 && s.groupOfHit (i) < s.numGroups());
+
+    // Removing everything, then adding, starts a fresh single group.
+    while (s.numHits() > 0)
+        s.removeHit (0);
+    CHECK (s.numGroups() == 0);
+    CHECK (s.addHit (onset) == 0);
+    CHECK (s.numGroups() == 1 && s.groupOfHit (0) == 0 && s.getHitSlot (0) == bbr::kUnassigned);
+    s.removeHit (5); // out of range: no-op
+    CHECK (s.numHits() == 1);
+}
+
 TEST (recompute_features)
 {
     const double sr = 44100.0;

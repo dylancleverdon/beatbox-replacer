@@ -5,6 +5,7 @@
 #include "../PluginProcessor.h"
 #include "LookAndFeel.h"
 #include "SlotsPanel.h"
+#include "TakeView.h"
 #include "WaveformView.h"
 
 #include <memory>
@@ -42,6 +43,7 @@ private:
 
     juce::TextButton learnButton;
     juce::TextButton loadButton { "Load audio file..." };
+    juce::TextButton playAllButton { "Play recording" };
     WaveformView waveform;
 
     IconButton fewerGroupsButton { "Fewer groups", IconButton::Icon::minus };
@@ -53,6 +55,7 @@ private:
     juce::TextButton addButton { "Add to training" };
     juce::TextButton replaceButton { "Replace training" };
     juce::TextButton discardButton { "Discard" };
+    DragClipHandle midiHandle;
 
     SlotsPanel slotsPanel;
 
@@ -74,6 +77,7 @@ private:
     void addClicked();
     void replaceClicked();
     void recluster (int delta);
+    void updatePlayAllButton();
     void updateLearnButton();
     void updateGuidance();
     void rebuildCards();

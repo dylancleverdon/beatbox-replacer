@@ -191,6 +191,57 @@ void teach (BeatboxProcessor& p)
         p.setLearnGroupSlot (g, best);
     }
 
+    // ---- learn clip MIDI, markers, audition ------------------------------------------------------
+    {
+        EXPECT (p.hasLearnClip(), "no learn clip after assigning groups");
+        int withSound = 0;
+        for (int i = 0; i < session.numHits(); ++i)
+            if (p.hasSlot (session.getHitSlot (i)))
+                ++withSound;
+
+        const auto midiFile = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("bbr-smoke-learn.mid");
+        EXPECT (p.writeLearnClipToMidiFile (midiFile), "couldn't write learn clip");
+        juce::MemoryBlock data;
+        midiFile.loadFileAsData (data);
+        midiFile.deleteFile();
+        const auto* bytes = static_cast<const uint8_t*> (data.getData());
+        const auto parsed = bbr::parseMidiFile (std::vector<uint8_t> (bytes, bytes + data.getSize()));
+        EXPECT (parsed.ok && (int) parsed.notes.size() == withSound, "learn clip has %d notes, expected %d",
+                (int) parsed.notes.size(), withSound);
+        EXPECT (p.getLearnClipDropBar() == 1, "loaded file should drop at bar 1");
+
+        const auto dragged = p.writeLearnClipForDrag();
+        EXPECT (dragged.existsAsFile(), "no learn drag file");
+        dragged.deleteFile();
+
+        // A marker plays up to the next one.
+        juce::AudioBuffer<float> buf (2, kBlock);
+        juce::MidiBuffer midi;
+        p.auditionLearnHit (0);
+        const auto gap = session.getHit (1).onsetSample - session.getHit (0).onsetSample;
+        EXPECT (p.isAuditioning() && p.getLearnAuditionPosition() >= 0, "hit audition not playing");
+        int64_t played = 0;
+        while (p.isAuditioning() && played < (int64_t) kRate * 5)
+        {
+            buf.clear();
+            p.processBlock (buf, midi);
+            played += kBlock;
+        }
+        EXPECT (played >= gap && played <= gap + (int64_t) (0.01 * kRate) + kBlock,
+                "hit audition played %d samples, gap %d", (int) played, (int) gap);
+
+        p.auditionLearnRecording();
+        EXPECT (p.getLearnAuditionPosition() == 0, "recording audition not at start");
+        p.stopAudition();
+        EXPECT (! p.isAuditioning() && p.getLearnAuditionPosition() == -1, "audition didn't stop");
+
+        const int hits = session.numHits();
+        const auto onset = session.getHit (2).onsetSample;
+        p.removeLearnHit (2);
+        EXPECT (session.numHits() == hits - 1, "marker not removed");
+        EXPECT (p.addLearnHit (onset) == 2 && session.numHits() == hits, "marker not re-added");
+    }
+
     p.commitLearnSession (false);
     EXPECT (p.getModel() != nullptr && ! p.getModel()->empty(), "no model after commit");
     EXPECT (p.getTrainingCount (0) >= 12 && p.getTrainingCount (1) >= 12 && p.getTrainingCount (2) >= 12,

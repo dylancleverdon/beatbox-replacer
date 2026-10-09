@@ -52,6 +52,14 @@ public:
     // Pass kUnassigned to remove the override (hit follows its group again).
     void setHitOverride (int i, int slotId);
 
+    // Adds a hit at onsetSample (clamped to the recording), measured like a detected one. It joins
+    // the group whose centre is nearest in feature space (group 0 if there were no groups) and
+    // follows that group's sound. Hits stay sorted by onset. Returns the new hit's index, or -1
+    // if there is no audio or a hit already sits at that sample.
+    int addHit (int64_t onsetSample);
+    // Removes a hit. A group left without hits is removed and later groups are renumbered.
+    void removeHit (int i);
+
     // When a slot is deleted: every group/hit pointing at it becomes kUnassigned.
     void forgetSlot (int slotId);
 

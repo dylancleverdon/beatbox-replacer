@@ -24,8 +24,7 @@ constexpr int kMidiChannel = 1;
 constexpr int kMinChunk = 256;
 constexpr int kMaxChunk = 16384;
 constexpr double kDefaultSampleRate = 48000.0;
-constexpr double kAuditionBufferSeconds = 4.0;
-constexpr double kAuditionHitSeconds = 0.25;
+constexpr double kAuditionLastHitSeconds = 2.0; // the last hit has no next marker to stop at
 constexpr double kAuditionPreRollSeconds = 0.005;
 constexpr double kMaxFileSeconds = 600.0;
 constexpr double kMeterReleaseSeconds = 0.3;
@@ -262,6 +261,11 @@ struct BeatboxProcessor::Impl
     std::vector<float> learnBuffer;     // guarded by learnLock
     std::atomic<int64_t> learnWritePos { 0 };
     std::atomic<double> learnSampleRate { kDefaultSampleRate };
+    // Host timeline where the learn recording started (written by the audio thread before it
+    // switches learnPhase to learnRecording).
+    std::atomic<double> learnStartPpq { 0.0 }, learnBarStartPpq { 0.0 }, learnBpm { 120.0 };
+    std::atomic<int> learnTimeSigNum { 4 }, learnTimeSigDen { 4 };
+    std::atomic<bool> learnHasPosition { false };
     std::atomic<int> learnPhase { learnIdle };
     std::atomic<bool> learnFollowsTransport { false };
 
@@ -287,7 +291,11 @@ struct BeatboxProcessor::Impl
     // ---- Audition ----------------------------------------------------------------------------------
     juce::SpinLock auditionLock;
     std::vector<float> auditionBuffer;  // guarded by auditionLock
-    int auditionLength = 0, auditionPos = 0;
+    std::atomic<int> auditionLength { 0 }, auditionPos { 0 }; // written under auditionLock
+    // Where the playing audio came from in the learn recording (-1: not from it), and how many
+    // recording samples one output sample advances.
+    std::atomic<int64_t> auditionLearnStart { -1 };
+    std::atomic<double> auditionStep { 1.0 };
 
     // ---- Meters ------------------------------------------------------------------------------------
     float meterLevel = 0.0f;            // audio thread
@@ -401,6 +409,12 @@ struct BeatboxProcessor::Impl
         if (phase == learnArmed && t.playing && analysing)
         {
             learnSampleRate.store (rate);
+            learnStartPpq.store (t.ppq);
+            learnBarStartPpq.store (juce::jmax (0.0, t.barStart));
+            learnBpm.store (t.bpm);
+            learnTimeSigNum.store (t.num);
+            learnTimeSigDen.store (t.den);
+            learnHasPosition.store (t.hasTransportInfo());
 
             if (learnPhase.compare_exchange_strong (phase, learnRecording))
                 phase = learnRecording;
@@ -591,15 +605,18 @@ struct BeatboxProcessor::Impl
     {
         const juce::SpinLock::ScopedTryLockType lock (auditionLock);
 
-        if (! lock.isLocked() || auditionPos >= auditionLength)
+        const int pos = auditionPos.load (std::memory_order_relaxed);
+        const int length = auditionLength.load (std::memory_order_relaxed);
+
+        if (! lock.isLocked() || pos >= length)
             return;
 
-        const int n = juce::jmin (numSamples, auditionLength - auditionPos);
+        const int n = juce::jmin (numSamples, length - pos);
 
         for (int ch = 0; ch < numChannels; ++ch)
-            buffer.addFrom (firstChannel + ch, 0, auditionBuffer.data() + auditionPos, n);
+            buffer.addFrom (firstChannel + ch, 0, auditionBuffer.data() + pos, n);
 
-        auditionPos += n;
+        auditionPos.store (pos + n, std::memory_order_relaxed);
     }
 
     void updateMeter (float blockPeak, int numSamples, double rate) noexcept
@@ -728,10 +745,11 @@ void BeatboxProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     }
 
     {
+        // Audition audio was resampled for the old rate.
         const juce::SpinLock::ScopedLockType lock (d.auditionLock);
-        d.auditionBuffer.assign ((size_t) std::ceil (kAuditionBufferSeconds * rate), 0.0f);
-        d.auditionLength = 0;
-        d.auditionPos = 0;
+        d.auditionLength.store (0);
+        d.auditionPos.store (0);
+        d.auditionLearnStart.store (-1);
     }
 
     d.meterLevel = 0.0f;
@@ -1218,6 +1236,7 @@ void BeatboxProcessor::startLearn()
     }
 
     d.learnSampleRate.store (rate);
+    d.learnHasPosition.store (false);
 
     // With a transport, recording follows play/stop; without one it starts right away.
     const bool followTransport = d.hostHasTransport.load();
@@ -1265,12 +1284,31 @@ void BeatboxProcessor::finishLearnRecording()
 
     std::vector<float> audio (recorded.begin(), recorded.begin() + length);
     recorded = std::vector<float>();
+
+    learnTiming = bbr::CaptureTake();
+
+    if (d.learnHasPosition.load())
+    {
+        learnTiming.startPpq = d.learnStartPpq.load();
+        learnTiming.barStartPpq = d.learnBarStartPpq.load();
+        learnTiming.bpm = d.learnBpm.load();
+        learnTiming.timeSigNum = d.learnTimeSigNum.load();
+        learnTiming.timeSigDen = d.learnTimeSigDen.load();
+    }
+    else
+    {
+        learnTiming.bpm = d.hostBpm.load();
+        learnTiming.timeSigNum = d.hostTimeSigNum.load();
+        learnTiming.timeSigDen = d.hostTimeSigDen.load();
+    }
+
     analyseLearnAudio (std::move (audio), d.learnSampleRate.load());
 }
 
 void BeatboxProcessor::analyseLearnAudio (std::vector<float> mono, double sampleRate)
 {
     auto& d = *impl;
+    stopAudition();
     learnSession.setAudio (std::move (mono), sampleRate);
     learnSession.analyze (currentDetectorSettings(), currentFeatureSettings(), getSlotInfos(), d.messageModel.get());
     d.learnReady = true;
@@ -1287,6 +1325,10 @@ juce::String BeatboxProcessor::learnFromFile (const juce::File& file)
         return error;
 
     cancelLearnRecording();
+    learnTiming = bbr::CaptureTake();
+    learnTiming.bpm = impl->hostBpm.load();
+    learnTiming.timeSigNum = impl->hostTimeSigNum.load();
+    learnTiming.timeSigDen = impl->hostTimeSigDen.load();
     impl->learnSampleRate.store (rate);
     impl->learnWritePos.store ((int64_t) mono.size());
     analyseLearnAudio (std::move (mono), rate);
@@ -1344,6 +1386,28 @@ void BeatboxProcessor::setLearnHitSlot (int hit, int slotId)
     sendChangeMessage();
 }
 
+int BeatboxProcessor::addLearnHit (int64_t onsetSample)
+{
+    if (! impl->learnReady)
+        return -1;
+
+    const int index = learnSession.addHit (onsetSample);
+
+    if (index >= 0)
+        sendChangeMessage();
+
+    return index;
+}
+
+void BeatboxProcessor::removeLearnHit (int hit)
+{
+    if (! impl->learnReady || hit < 0 || hit >= learnSession.numHits())
+        return;
+
+    learnSession.removeHit (hit);
+    sendChangeMessage();
+}
+
 void BeatboxProcessor::commitLearnSession (bool replaceExisting)
 {
     auto& d = *impl;
@@ -1381,6 +1445,7 @@ void BeatboxProcessor::commitLearnSession (bool replaceExisting)
     }
 
     rebuildModel();
+    stopAudition();
     learnSession.clear();
     d.learnReady = false;
     sendChangeMessage();
@@ -1389,6 +1454,7 @@ void BeatboxProcessor::commitLearnSession (bool replaceExisting)
 void BeatboxProcessor::discardLearnSession()
 {
     cancelLearnRecording();
+    stopAudition();
     learnSession.clear();
     impl->learnReady = false;
     sendChangeMessage();
@@ -1530,7 +1596,7 @@ juce::String BeatboxProcessor::captureFromFile (const juce::File& file)
     return {};
 }
 
-std::vector<uint8_t> BeatboxProcessor::createTakeMidi (bool fromSongStart) const
+std::vector<uint8_t> BeatboxProcessor::createTakeMidi (const bbr::CaptureTake& take, bool fromSongStart) const
 {
     int noteForSlot[bbr::kMaxSlots];
     std::fill (std::begin (noteForSlot), std::end (noteForSlot), -1);
@@ -1539,7 +1605,7 @@ std::vector<uint8_t> BeatboxProcessor::createTakeMidi (bool fromSongStart) const
         if (s.id >= 0 && s.id < bbr::kMaxSlots)
             noteForSlot[s.id] = juce::jlimit (0, 127, s.note);
 
-    const double bpm = std::isfinite (lastTake.bpm) && lastTake.bpm > 0.0 ? lastTake.bpm : 120.0;
+    const double bpm = std::isfinite (take.bpm) && take.bpm > 0.0 ? take.bpm : 120.0;
 
     bbr::TakeToMidiOptions options;
     options.fromSongStart = fromSongStart;
@@ -1547,9 +1613,9 @@ std::vector<uint8_t> BeatboxProcessor::createTakeMidi (bool fromSongStart) const
     options.dynamicVelocity = impl->dynamicVelocity();
     options.fixedVelocity = impl->fixedVelocity();
 
-    const auto notes = bbr::takeToNotes (lastTake, noteForSlot, impl->messageModel.get(), options);
+    const auto notes = bbr::takeToNotes (take, noteForSlot, impl->messageModel.get(), options);
     const auto trackName = "Beatbox " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H:%M");
-    auto bytes = bbr::writeMidiFile (notes, bpm, lastTake.timeSigNum, lastTake.timeSigDen, 960, trackName.toStdString());
+    auto bytes = bbr::writeMidiFile (notes, bpm, take.timeSigNum, take.timeSigDen, 960, trackName.toStdString());
 
     if (! bbr::parseMidiFile (bytes).ok)
         return {};
@@ -1562,7 +1628,7 @@ bool BeatboxProcessor::writeTakeToMidiFile (const juce::File& file, bool fromSon
     if (! hasTake())
         return false;
 
-    const auto bytes = createTakeMidi (fromSongStart);
+    const auto bytes = createTakeMidi (lastTake, fromSongStart);
 
     if (bytes.empty() || ! file.getParentDirectory().createDirectory().wasOk())
         return false;
@@ -1575,6 +1641,11 @@ juce::File BeatboxProcessor::writeTakeForDrag (bool fromSongStart) const
     if (! hasTake())
         return {};
 
+    return writeMidiForDrag (lastTake, fromSongStart, "Beatbox Take");
+}
+
+juce::File BeatboxProcessor::writeMidiForDrag (const bbr::CaptureTake& take, bool fromSongStart, const juce::String& stem) const
+{
     const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
                          .getChildFile ("BeatboxReplacer")
                          .getChildFile ("drag");
@@ -1589,13 +1660,77 @@ juce::File BeatboxProcessor::writeTakeForDrag (bool fromSongStart) const
         if (old.getLastModificationTime() < cutoff)
             old.deleteFile();
 
-    const auto stem = "Beatbox Take " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S");
-    const auto file = dir.getNonexistentChildFile (stem, ".mid", true);
+    const auto file = dir.getNonexistentChildFile (stem + " " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S"),
+                                                   ".mid", true);
+    const auto bytes = createTakeMidi (take, fromSongStart);
 
-    if (! writeTakeToMidiFile (file, fromSongStart))
+    if (bytes.empty() || ! file.replaceWithData (bytes.data(), bytes.size()))
         return {};
 
     return file;
+}
+
+bbr::CaptureTake BeatboxProcessor::makeLearnTake() const
+{
+    bbr::CaptureTake take = learnTiming;
+    take.hits.clear();
+
+    const double rate = learnSession.getSampleRate();
+    const double bpm = std::isfinite (take.bpm) && take.bpm > 0.0 ? take.bpm : 120.0;
+
+    if (! (rate > 0.0))
+        return take;
+
+    for (int i = 0; i < learnSession.numHits(); ++i)
+    {
+        const auto& hit = learnSession.getHit (i);
+        bbr::CapturedHit c;
+        c.ppq = take.startPpq + (double) hit.onsetSample / rate * bpm / 60.0;
+        c.slotId = learnSession.getHitSlot (i);
+        c.peakDb = hit.peakDb;
+        c.features = hit.features;
+        take.hits.push_back (c);
+    }
+
+    return take;
+}
+
+bool BeatboxProcessor::hasLearnClip() const
+{
+    if (! impl->learnReady)
+        return false;
+
+    for (int i = 0; i < learnSession.numHits(); ++i)
+        if (hasSlot (learnSession.getHitSlot (i)))
+            return true;
+
+    return false;
+}
+
+juce::File BeatboxProcessor::writeLearnClipForDrag() const
+{
+    if (! hasLearnClip())
+        return {};
+
+    return writeMidiForDrag (makeLearnTake(), false, "Beatbox Learn");
+}
+
+bool BeatboxProcessor::writeLearnClipToMidiFile (const juce::File& file) const
+{
+    if (! hasLearnClip())
+        return false;
+
+    const auto bytes = createTakeMidi (makeLearnTake(), false);
+
+    if (bytes.empty() || ! file.getParentDirectory().createDirectory().wasOk())
+        return false;
+
+    return file.replaceWithData (bytes.data(), bytes.size());
+}
+
+int BeatboxProcessor::getLearnClipDropBar() const
+{
+    return bbr::barNumberAt (learnTiming.barStartPpq, learnTiming.timeSigNum, learnTiming.timeSigDen);
 }
 
 int BeatboxProcessor::getTakeDropBar (bool fromSongStart) const
@@ -1659,10 +1794,38 @@ void BeatboxProcessor::auditionLearnHit (int hitIndex)
     const auto total = (int64_t) audio.size();
     const auto onset = learnSession.getHit (hitIndex).onsetSample;
     const auto start = juce::jlimit<int64_t> (0, total, onset - (int64_t) std::llround (kAuditionPreRollSeconds * rate));
-    const auto length = juce::jmin<int64_t> (total - start, (int64_t) std::llround (kAuditionHitSeconds * rate));
 
-    if (length > 0)
-        auditionAudio (audio.data() + start, (int) length, rate);
+    // Play up to the next marker (the last hit gets a couple of seconds).
+    auto end = std::numeric_limits<int64_t>::max();
+
+    for (int i = 0; i < learnSession.numHits(); ++i)
+    {
+        const auto other = learnSession.getHit (i).onsetSample;
+
+        if (other > onset)
+            end = juce::jmin (end, other);
+    }
+
+    if (end == std::numeric_limits<int64_t>::max())
+        end = onset + (int64_t) std::llround (kAuditionLastHitSeconds * rate);
+
+    end = juce::jmin (total, end);
+
+    if (end > start)
+        auditionSamples (audio.data() + start, (int) (end - start), rate, start);
+}
+
+void BeatboxProcessor::auditionLearnRecording (int64_t fromSample)
+{
+    if (! learnSession.hasAudio())
+        return;
+
+    const auto& audio = learnSession.getAudio();
+    const auto total = (int64_t) audio.size();
+    const auto start = juce::jlimit<int64_t> (0, total, fromSample);
+
+    if (total > start)
+        auditionSamples (audio.data() + start, (int) (total - start), learnSession.getSampleRate(), start);
 }
 
 void BeatboxProcessor::auditionTrainingHit (int trainingIndex)
@@ -1676,6 +1839,11 @@ void BeatboxProcessor::auditionTrainingHit (int trainingIndex)
 
 void BeatboxProcessor::auditionAudio (const float* mono, int numSamples, double sampleRate)
 {
+    auditionSamples (mono, numSamples, sampleRate, -1);
+}
+
+void BeatboxProcessor::auditionSamples (const float* mono, int numSamples, double sampleRate, int64_t learnSourceStart)
+{
     auto& d = *impl;
     const double outRate = d.currentRate.load();
 
@@ -1684,7 +1852,7 @@ void BeatboxProcessor::auditionAudio (const float* mono, int numSamples, double 
 
     // Linear resampling to the output rate.
     const double step = sampleRate / outRate;
-    const auto maxLength = (int) std::ceil (kAuditionBufferSeconds * outRate);
+    const auto maxLength = (int) std::ceil (kMaxFileSeconds * outRate);
     const int length = juce::jlimit (0, maxLength, (int) std::floor ((double) (numSamples - 1) / step) + 1);
     std::vector<float> resampled ((size_t) length);
 
@@ -1709,11 +1877,40 @@ void BeatboxProcessor::auditionAudio (const float* mono, int numSamples, double 
     for (int i = 0; i < fadeOut; ++i)
         resampled[(size_t) (length - 1 - i)] *= (float) i / (float) fadeOut;
 
+    {
+        // Swap, don't copy: the audio thread never allocates and the old buffer is freed here.
+        const juce::SpinLock::ScopedLockType lock (d.auditionLock);
+        std::swap (d.auditionBuffer, resampled);
+        d.auditionLength.store (length);
+        d.auditionPos.store (0);
+        d.auditionLearnStart.store (learnSourceStart);
+        d.auditionStep.store (step);
+    }
+}
+
+void BeatboxProcessor::stopAudition()
+{
+    auto& d = *impl;
     const juce::SpinLock::ScopedLockType lock (d.auditionLock);
-    const int n = juce::jmin (length, (int) d.auditionBuffer.size());
-    std::copy (resampled.begin(), resampled.begin() + n, d.auditionBuffer.begin());
-    d.auditionLength = n;
-    d.auditionPos = 0;
+    d.auditionLength.store (0);
+    d.auditionPos.store (0);
+    d.auditionLearnStart.store (-1);
+}
+
+bool BeatboxProcessor::isAuditioning() const
+{
+    return impl->auditionPos.load() < impl->auditionLength.load();
+}
+
+int64_t BeatboxProcessor::getLearnAuditionPosition() const
+{
+    const auto& d = *impl;
+    const auto start = d.auditionLearnStart.load();
+
+    if (start < 0 || ! isAuditioning())
+        return -1;
+
+    return start + (int64_t) std::llround ((double) d.auditionPos.load() * d.auditionStep.load());
 }
 
 //==================================================================================================

@@ -144,6 +144,17 @@ public:
     void reclusterLearnSession (int k);
     void setLearnGroupSlot (int group, int slotId);
     void setLearnHitSlot (int hit, int slotId);         // kUnassigned clears the override
+    // Adds a hit marker at a sample of the learn recording; returns its index or -1.
+    int addLearnHit (int64_t onsetSample);
+    void removeLearnHit (int hit);
+
+    // MIDI of the learn recording itself: every hit with a sound becomes a note. A recording made
+    // with Learn is placed where it was recorded on the host timeline (like a Capture take); a
+    // loaded file starts at bar 1 at the host tempo.
+    bool hasLearnClip() const;
+    juce::File writeLearnClipForDrag() const;
+    bool writeLearnClipToMidiFile (const juce::File& file) const;
+    int getLearnClipDropBar() const;
     // Adds the session's labelled hits to the training set (or replaces the training set) and
     // rebuilds the model. Clears the session afterwards (state -> idle).
     void commitLearnSession (bool replaceExisting);
@@ -193,6 +204,12 @@ public:
     void auditionLearnHit (int hitIndex);               // from the learn recording
     void auditionTrainingHit (int trainingIndex);
     void auditionAudio (const float* mono, int numSamples, double sampleRate);
+    // Plays the whole learn recording from `fromSample`.
+    void auditionLearnRecording (int64_t fromSample = 0);
+    void stopAudition();
+    bool isAuditioning() const;                         // any thread
+    // Sample of the learn recording currently playing, or -1 if no learn audio is playing.
+    int64_t getLearnAuditionPosition() const;           // any thread
 
     // ---- Profiles ----------------------------------------------------------------------------
     // A profile = slots + training hits (+ window setting). Same XML as inside the plugin state.
@@ -213,6 +230,7 @@ private:
     bbr::LearnSession learnSession;
     std::vector<bbr::TrainingHit> training;
     bbr::CaptureTake lastTake;
+    bbr::CaptureTake learnTiming;   // timeline position of the learn recording (no hits)
 
     void timerCallback() override;
     void parameterChanged (const juce::String& parameterID, float newValue) override;
@@ -228,7 +246,10 @@ private:
     void applyProfile (std::vector<bbr::SlotInfo> slotInfos, std::vector<bbr::TrainingHit> hits,
                        float windowMs, bool setWindowParameter);
     std::unique_ptr<juce::XmlElement> createProfileXml() const;
-    std::vector<uint8_t> createTakeMidi (bool fromSongStart) const;
+    std::vector<uint8_t> createTakeMidi (const bbr::CaptureTake& take, bool fromSongStart) const;
+    bbr::CaptureTake makeLearnTake() const;
+    juce::File writeMidiForDrag (const bbr::CaptureTake& take, bool fromSongStart, const juce::String& stem) const;
+    void auditionSamples (const float* mono, int numSamples, double sampleRate, int64_t learnSourceStart);
     juce::String readAudioFile (const juce::File& file, std::vector<float>& monoOut, double& sampleRateOut);
 
    #if BBR_AUX_ONLY_SIDECHAIN

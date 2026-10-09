@@ -151,7 +151,7 @@ private:
 
 //==================================================================================================
 LearnTab::LearnTab (BeatboxProcessor& p)
-    : processor (p), waveform (p), slotsPanel (p)
+    : processor (p), waveform (p), midiHandle (p, DragClipHandle::Source::learn), slotsPanel (p)
 {
     learnButton.onClick = [this] { learnClicked(); };
     addAndMakeVisible (learnButton);
@@ -159,6 +159,18 @@ LearnTab::LearnTab (BeatboxProcessor& p)
     loadButton.setTooltip ("Learn from a recording instead (WAV, AIFF, FLAC, OGG or MP3). You can also drop a file here.");
     loadButton.onClick = [this] { loadClicked(); };
     addAndMakeVisible (loadButton);
+
+    playAllButton.setTooltip ("Listen to the whole recording through this device's output");
+    playAllButton.onClick = [this]
+    {
+        if (processor.isAuditioning())
+            processor.stopAudition();
+        else
+            processor.auditionLearnRecording();
+
+        updatePlayAllButton();
+    };
+    addAndMakeVisible (playAllButton);
 
     addAndMakeVisible (waveform);
 
@@ -193,6 +205,8 @@ LearnTab::LearnTab (BeatboxProcessor& p)
         refresh();
     };
     addAndMakeVisible (discardButton);
+
+    addAndMakeVisible (midiHandle);
 
     addAndMakeVisible (slotsPanel);
 
@@ -246,6 +260,8 @@ void LearnTab::refresh()
     replaceButton.setEnabled (hasHits);
     discardButton.setEnabled (showSession && session.hasAudio());
     loadButton.setEnabled (! isRecordingState (state));
+    midiHandle.refresh();
+    updatePlayAllButton();
     fewerGroupsButton.setVisible (groupsToShow > 0);
     moreGroupsButton.setVisible (groupsToShow > 0);
     fewerGroupsButton.setEnabled (hasHits && groupsToShow > 1);
@@ -265,6 +281,21 @@ void LearnTab::tick()
         refresh();
     else if (isRecordingState (state))
         updateLearnButton();
+
+    waveform.tick();
+    updatePlayAllButton();
+}
+
+void LearnTab::updatePlayAllButton()
+{
+    const bool canPlay = ! isRecordingState (processor.getLearnState()) && processor.getLearnSession().hasAudio();
+    const bool playing = canPlay && processor.getLearnAuditionPosition() >= 0;
+    const juce::String text (playing ? "Stop" : "Play recording");
+
+    if (playAllButton.getButtonText() != text)
+        playAllButton.setButtonText (text);
+
+    playAllButton.setEnabled (canPlay);
 }
 
 void LearnTab::rebuildCards()
@@ -373,7 +404,8 @@ void LearnTab::updateGuidance()
     {
         text = "Found *" + plural (session.numHits(), "hit", "hits") + "* in *"
                + plural (session.numGroups(), "group", "groups")
-               + "*. Choose a sound for each group, click single hits to fix mistakes, then *Add to training*.";
+               + "*. Choose a sound for each group, click single hits to fix mistakes, right-click "
+                 "to add or delete markers, then *Add to training*.";
 
         const auto counts = session.slotCounts();
         const auto unassigned = counts.size() > (size_t) bbr::kMaxSlots + 1 ? counts[(size_t) bbr::kMaxSlots + 1] : 0;
@@ -587,21 +619,25 @@ void LearnTab::resized()
 
     auto inner = r.reduced (kPanelPadding + 2, kPanelPadding);
     auto top = inner.removeFromTop (50);
-    const auto loadWidth = 160;
-    learnButton.setBounds (top.removeFromLeft (juce::jmin (390, top.getWidth() - loadWidth - 12)));
+    const auto loadWidth = 150, playWidth = 130;
+    learnButton.setBounds (top.removeFromLeft (juce::jmin (390, top.getWidth() - loadWidth - playWidth - 24)));
     top.removeFromLeft (12);
     loadButton.setBounds (top.removeFromLeft (loadWidth).withSizeKeepingCentre (loadWidth, 34));
+    top.removeFromLeft (12);
+    playAllButton.setBounds (top.removeFromLeft (playWidth).withSizeKeepingCentre (playWidth, 34));
 
     inner.removeFromTop (8);
     guidanceArea = inner.removeFromTop (42);
     inner.removeFromTop (6);
 
     auto bottom = inner.removeFromBottom (34);
-    discardButton.setBounds (bottom.removeFromRight (100));
+    discardButton.setBounds (bottom.removeFromRight (90));
     bottom.removeFromRight (8);
-    replaceButton.setBounds (bottom.removeFromRight (150));
+    replaceButton.setBounds (bottom.removeFromRight (140));
     bottom.removeFromRight (8);
-    addButton.setBounds (bottom.removeFromRight (160));
+    addButton.setBounds (bottom.removeFromRight (150));
+    bottom.removeFromRight (12);
+    midiHandle.setBounds (bottom.removeFromLeft (juce::jmin (260, bottom.getWidth())));
 
     inner.removeFromBottom (10);
     groupsViewport.setBounds (inner.removeFromBottom (92));

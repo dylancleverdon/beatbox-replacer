@@ -30,14 +30,17 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TakeView)
 };
 
-// "Drag MIDI clip into Ableton". On drag it writes the take to a new .mid file (complete and
+// "Drag MIDI clip into Ableton". On drag it writes the clip to a new .mid file (complete and
 // closed) and starts an external file drag. No claims about where it landed: hosts don't say.
+// The clip is the last Capture take, or (Source::learn) the labelled hits of the Learn recording.
 class DragClipHandle : public juce::Component,
                        public juce::SettableTooltipClient,
                        private juce::Timer
 {
 public:
-    explicit DragClipHandle (BeatboxProcessor&);
+    enum class Source { take, learn };
+
+    explicit DragClipHandle (BeatboxProcessor&, Source = Source::take);
     ~DragClipHandle() override;
 
     void setFromSongStart (bool shouldStartAtSongStart);
@@ -53,11 +56,15 @@ public:
 
 private:
     BeatboxProcessor& processor;
+    const Source source;
     bool fromSongStart = false;
     bool dragArmed = false;        // set on mouseDown; one drag attempt per press
     bool dragInProgress = false;   // cleared by the completion callback (or when starting fails)
     juce::String feedback;
 
+    bool hasClip() const;
+    int dropBar() const;
+    juce::File writeForDrag() const;
     void showFeedback (const juce::String& text, int milliseconds = 4000);
     void timerCallback() override;
 

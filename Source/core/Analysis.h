@@ -23,6 +23,11 @@ std::vector<DetectedHit> analyzeBuffer (const float* mono, int64_t numSamples, d
 std::vector<float> makeSnippet (const float* mono, int64_t numSamples, int64_t onsetSample,
                                 double sampleRate, int& onsetOffsetOut);
 
+// Measures a hit at a given onset (e.g. one the user placed by hand) with the same feature path
+// as analyzeBuffer. onsetSample is clamped to the buffer.
+DetectedHit analyzeHitAt (const float* mono, int64_t numSamples, double sampleRate,
+                          int64_t onsetSample, const FeatureSettings& features);
+
 // Recomputes TrainingHit::features (and peakDb) from each hit's snippet for the given settings,
 // using a FeatureExtractor prepared at each hit's own sample rate.
 void recomputeFeatures (std::vector<TrainingHit>& hits, const FeatureSettings& settings);
