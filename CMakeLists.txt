@@ -17,6 +17,9 @@ endif()
 
 option(BBR_BUILD_PLUGIN "Build the JUCE plugin (downloads JUCE)" ON)
 option(BBR_BUILD_TESTS "Build the core unit tests" ON)
+option(BBR_COPY_AFTER_BUILD "Copy the built plugin into the system plugin folder (local dev only)" OFF)
+# Alternative bus layout (sidechain as the only input, reported as aux). Off = main input + sidechain.
+option(BBR_AUX_ONLY_SIDECHAIN "Declare the sidechain as the only input bus" OFF)
 
 # Where the updater looks for releases. Change these if the repo moves.
 set(BBR_GITHUB_OWNER "dylancleverdon" CACHE STRING "GitHub owner of the release repo")
@@ -86,7 +89,7 @@ if(BBR_BUILD_PLUGIN)
         EDITOR_WANTS_KEYBOARD_FOCUS TRUE
         VST3_CATEGORIES Instrument Drum
         AU_MAIN_TYPE kAudioUnitType_MusicDevice
-        COPY_PLUGIN_AFTER_BUILD FALSE)
+        COPY_PLUGIN_AFTER_BUILD ${BBR_COPY_AFTER_BUILD})
 
     juce_generate_juce_header(BeatboxReplacer)
 
@@ -108,7 +111,7 @@ if(BBR_BUILD_PLUGIN)
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        JUCE_DISPLAY_SPLASH_SCREEN=0
+        BBR_AUX_ONLY_SIDECHAIN=$<BOOL:${BBR_AUX_ONLY_SIDECHAIN}>
         BBR_GITHUB_OWNER="${BBR_GITHUB_OWNER}"
         BBR_GITHUB_REPO="${BBR_GITHUB_REPO}"
         BBR_GITHUB_TOKEN="${BBR_GITHUB_TOKEN}")
@@ -118,6 +121,7 @@ if(BBR_BUILD_PLUGIN)
             bbr_core
             juce::juce_audio_utils
             juce::juce_audio_formats
+            juce::juce_cryptography
             juce::juce_gui_extra
         PUBLIC
             juce::juce_recommended_config_flags

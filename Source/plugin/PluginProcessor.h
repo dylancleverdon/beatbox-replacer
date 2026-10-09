@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <limits>
 #include <memory>
 
 // Parameter IDs (AudioProcessorValueTreeState).
@@ -46,15 +47,28 @@ public:
     ~BeatboxProcessor() override;
 
     // ---- juce::AudioProcessor -------------------------------------------------------------
-    // Buses: input 0 "Input" (main, stereo, may be disabled), input 1 "Sidechain" (aux, stereo),
-    // output 0 "Output" (stereo). Analysis uses the sidechain when it has channels, otherwise
-    // the main input; channels are averaged to mono. The output is silent except for audition.
+    // Buses (default build): input 0 "Input" (main; disabled, mono or stereo -- Live does not feed
+    // it on an instrument), input 1 "Sidechain" (aux; mono or stereo, NOT disabled: when the
+    // processor refuses a disabled sidechain, JUCE's VST3 wrapper hands it zeros when the host
+    // deactivates the bus), output 0 "Output" (mono or stereo; Live wants an audio output).
+    // With -DBBR_AUX_ONLY_SIDECHAIN=1 the only input is the sidechain at index 0 and the
+    // VST3ClientExtensions override getPluginHasMainInput() returns false, so it is still kAux.
+    // processBlock: clear incoming MIDI first (the VST3 wrapper shares one MidiBuffer for in and
+    // out); copy the analysis input (sidechain via getBusBuffer if it has channels, else the main
+    // input, else silence; channels averaged to mono) into a member buffer BEFORE touching the
+    // output (buffers are in place); then clear every output channel and add audition audio.
+    // MIDI events are clamped to [0, numSamples - 1]; note-offs due in a later block carry over.
+    // Never define JucePlugin_PreferredChannelConfigurations (it hides the sidechain).
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    // Clears audio + incoming MIDI and sends note-offs for any held notes.
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
+    using AudioProcessor::processBlockBypassed;
 
+    // Creates BeatboxEditor (PluginEditor.h).
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
@@ -62,7 +76,9 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    // Infinite tail: Live may stop processing an instrument that gets no MIDI and outputs
+    // silence; the plugin must keep listening to the sidechain.
+    double getTailLengthSeconds() const override { return std::numeric_limits<double>::infinity(); }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -154,8 +170,13 @@ public:
     // Converts an audio file straight into a take (bpm/time signature from the host if known,
     // else 120 bpm 4/4; positions measured from the file start, i.e. bar 1).
     juce::String captureFromFile (const juce::File& file);
-    // Writes the take as a .mid file. fromSongStart: see bbr::TakeToMidiOptions.
+    // Writes the take as a .mid file (writeMidiFile with no tempo/time-signature events, track
+    // name "Beatbox <date time>"), via MemoryOutputStream + File::replaceWithData so the file is
+    // complete and closed when this returns. fromSongStart: see bbr::TakeToMidiOptions.
     bool writeTakeToMidiFile (const juce::File& file, bool fromSongStart) const;
+    // Writes the take to a NEW uniquely named file under <temp>/BeatboxReplacer/drag (sweeping
+    // files there older than 24 h first) for dragging into the DAW. Returns {} on failure.
+    juce::File writeTakeForDrag (bool fromSongStart) const;
     // Bar number the clip should be dropped at (1 when fromSongStart).
     int getTakeDropBar (bool fromSongStart) const;
     static constexpr int kMaxCaptureHits = 8192;

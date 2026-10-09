@@ -11,7 +11,9 @@ namespace bbr
 //
 // Algorithm (all times converted with the sample rate, so behaviour is rate-independent):
 //   * hop = max(16, round(sampleRate * 0.0025)) samples (2.5 ms).
-//   * For every completed hop compute two levels in dB (10*log10(mean square + 1e-12)):
+//   * For every completed hop compute two levels in dB (10*log10(mean square + 1e-12)), the mean
+//     square taken over that hop and the one before it (5 ms: a single 2.5 ms hop ripples by
+//     more than riseDb on sustained sounds below ~80 Hz, which would retrigger kicks):
 //       - fullDb: the raw signal
 //       - hfDb:   the signal through a 2nd-order high-pass at 4 kHz (state kept across calls)
 //     so quiet hi-hats ("ts") trigger as reliably as loud kicks ("b").
@@ -20,7 +22,8 @@ namespace bbr
 //       (fullDb >= thresholdDb       && riseFull >= riseDb) or
 //       (hfDb   >= thresholdDb - 6   && riseHf   >= riseDb).
 //   * Onset refinement: look at the triggering hop and the hop before it; the onset is the
-//     first sample in that span whose |x| >= 0.5 * max|x| over the span.
+//     first sample in that span whose |x| >= 0.5 * max|x| over the span. x is the raw signal,
+//     or the high-passed one when only the hf condition fired (a hi-hat over a kick's tail).
 //     (Reported onsets can therefore be up to 2 hops in the past relative to the current sample.)
 //   * After an onset, the next onset is not allowed until minGapMs later.
 //
@@ -58,12 +61,14 @@ private:
 
     // implementation state (sized in prepare())
     std::vector<float> hopBuffer;   // last 2 hops of raw samples, ring
+    std::vector<float> hfHopBuffer; // the same 2 hops, high-passed
     std::vector<float> fullHistory; // ring of hop levels
     std::vector<float> hfHistory;
     int historyPos = 0;
     int historyCount = 0;
     int hopFill = 0;
     double fullAcc = 0.0, hfAcc = 0.0;
+    double prevFullAcc = 0.0, prevHfAcc = 0.0; // sums of squares of the previous hop
     int64_t lastOnset = -1;
     // high-pass biquad state + coefficients
     float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
