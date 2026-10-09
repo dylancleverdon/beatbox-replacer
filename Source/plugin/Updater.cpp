@@ -436,7 +436,9 @@ bool isValidlySigned (const juce::File& bundle)
     const bool ok = runTool ({ "/usr/bin/codesign", "--verify", "--deep", "--strict", bundle.getFullPathName() }, output);
 
     if (! ok)
+    {
         DBG ("codesign --verify failed for " << bundle.getFullPathName() << ": " << output);
+    }
 
     return ok;
 }

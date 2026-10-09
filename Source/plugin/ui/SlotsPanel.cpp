@@ -228,13 +228,15 @@ SlotsPanel::SlotsPanel (BeatboxProcessor& p)
     addAndMakeVisible (addButton);
 
     clearButton.setTooltip ("Delete every training example. Your sounds and their notes stay.");
-    clearButton.onClick = [this]
+    // The SafePointer is made in the outer lambda: MSVC resolves `this` inside a nested lambda's
+    // init-capture to the outer closure, not to the panel.
+    clearButton.onClick = [this, safeThis = juce::Component::SafePointer<SlotsPanel> (this)]
     {
         confirm (*this, "Clear all training?",
                  "This deletes all " + juce::String (totalCount) + " training examples, including Ignore. "
                  "Your sounds and their notes stay.",
                  "Clear all",
-                 [safeThis = juce::Component::SafePointer<SlotsPanel> (this)]
+                 [safeThis]
                  {
                      if (safeThis != nullptr)
                          safeThis->processor.clearTraining();
