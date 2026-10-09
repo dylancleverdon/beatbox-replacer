@@ -57,8 +57,8 @@ thread never releases the last reference.
 
 ## Releases and updates
 
-Every push to `main` builds Windows + macOS in GitHub Actions and publishes release
-`v1.0.<run number>` with:
+Every push to the repository's default branch builds Windows + macOS in GitHub Actions and
+publishes release `v1.0.<run number>` with:
 
 | asset | used for |
 |---|---|

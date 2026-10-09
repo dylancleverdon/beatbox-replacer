@@ -106,19 +106,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     AudioProcessorValueTreeState::ParameterLayout layout;
 
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::live, 1 }, "Live MIDI", true));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::threshold, 1 }, "Threshold",
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::threshold, 1 }, "Sensitivity gate",
                                                        NormalisableRange<float> (-70.0f, -10.0f, 0.5f), -48.0f,
                                                        AudioParameterFloatAttributes().withLabel ("dB")));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::rise, 1 }, "Sensitivity",
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::rise, 1 }, "Attack rise",
                                                        NormalisableRange<float> (3.0f, 24.0f, 0.5f), 9.0f,
                                                        AudioParameterFloatAttributes().withLabel ("dB")));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::minGap, 1 }, "Min gap",
                                                        NormalisableRange<float> (20.0f, 300.0f, 1.0f), 60.0f,
                                                        AudioParameterFloatAttributes().withLabel ("ms")));
-    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::window, 1 }, "Analysis window",
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::window, 1 }, "Listen window",
                                                        NormalisableRange<float> (bbr::kMinWindowMs, bbr::kMaxWindowMs, 1.0f), 20.0f,
                                                        AudioParameterFloatAttributes().withLabel ("ms").withAutomatable (false)));
-    layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::dynamic, 1 }, "Dynamic velocity", true));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { ParamIDs::dynamic, 1 }, "Velocity follows loudness", true));
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { ParamIDs::fixedVelocity, 1 }, "Fixed velocity", 1, 127, 100));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ParamIDs::noteLength, 1 }, "Note length",
                                                        NormalisableRange<float> (10.0f, 500.0f, 1.0f), 60.0f,

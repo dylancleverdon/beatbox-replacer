@@ -1,7 +1,7 @@
-# Build, test, package and (on main) release Beatbox Replacer.
+# Build, test, package and (on the default branch) release Beatbox Replacer.
 #
-# Every push to main publishes release v1.0.<run number> with the assets the in-plugin updater
-# expects (see Source/plugin/Updater.h). Keep this file's name: github.run_number is counted per
+# Every push to the repository's default branch publishes release v1.0.<run number> with the
+# assets the in-plugin updater expects (see Source/plugin/Updater.h). Keep this file's name: github.run_number is counted per
 # workflow, and a reset would make new releases look older than existing ones.
 
 name: Build
@@ -19,8 +19,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Runs on main are queued, never cancelled, so releases are published in order.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Runs on the default branch are queued, never cancelled, so releases are published in order.
+  cancel-in-progress: ${{ github.ref_name != github.event.repository.default_branch }}
 
 permissions:
   contents: read
@@ -391,7 +391,9 @@ jobs:
   release:
     name: Publish release
     needs: [core-tests, linux-plugin, windows, macos]
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    if: >-
+      (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
+      || (github.event_name == 'workflow_dispatch' && inputs.publish)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
