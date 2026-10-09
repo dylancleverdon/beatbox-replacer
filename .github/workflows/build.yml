@@ -250,8 +250,10 @@ jobs:
           Expand-Archive -Path "$dir.zip" -DestinationPath $dir -Force
           $exe = Get-ChildItem -Path $dir -Recurse -Filter pluginval.exe | Select-Object -First 1 -ExpandProperty FullName
           if (-not $exe) { throw 'pluginval.exe not found in the download' }
-          & $exe --strictness-level 5 --verbose --validate "${{ steps.bundle.outputs.bundle }}"
-          if ($LASTEXITCODE -ne 0) { throw "pluginval reported problems (exit code $LASTEXITCODE)" }
+          # pluginval is a GUI-subsystem app: '&' would not wait for it, so use Start-Process -Wait.
+          $p = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru -ArgumentList @(
+                 '--strictness-level', '5', '--verbose', '--validate', '"${{ steps.bundle.outputs.bundle }}"')
+          if ($p.ExitCode -ne 0) { throw "pluginval reported problems (exit code $($p.ExitCode))" }
 
   macos:
     name: macOS (VST3 + AU, universal)
